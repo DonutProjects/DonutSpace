@@ -36,7 +36,7 @@ impl GameState {
     }
 
     pub fn update_chunks(&mut self) {
-        let view_radius = 5;
+        let view_radius = 10;
         let center_cx = (self.camera.x / super::CHUNK_SIZE as f32).floor() as i32;
         let center_cy = (self.camera.y / super::CHUNK_SIZE as f32).floor() as i32;
 
@@ -113,8 +113,6 @@ impl GameState {
         clear_background(BLACK);
 
         let (screen_w, screen_h) = (screen_width(), screen_height());
-        let offset_x = screen_w / 2.0 - self.camera.x * self.camera.zoom;
-        let offset_y = screen_h / 2.0 - self.camera.y * self.camera.zoom;
 
         for ((cx, cy), chunk) in &self.chunks {
             let chunk_world_x = *cx as f32 * super::CHUNK_SIZE as f32;
@@ -129,7 +127,8 @@ impl GameState {
                 if screen_x > -10.0 && screen_x < screen_w + 10.0
                     && screen_y > -10.0 && screen_y < screen_h + 10.0
                 {
-                    draw_circle(screen_x, screen_y, star.size * self.camera.zoom, Color::new(
+                    let draw_size = star.size.clamp(0.5, 10.0);
+                    draw_circle(screen_x, screen_y, draw_size, Color::new(
                         star.brightness,
                         star.brightness,
                         star.brightness,

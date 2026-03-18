@@ -9,9 +9,8 @@ const SHIP_SIZE: f32 = 64.0;
 const SHIP_SPEED: f32 = 500.0;
 const FRICTION: f32 = 0.95;
 const MAX_SPEED: f32 = 1000.0;
-const ROTATION_SPEED: f32 = 3.0; // radians per second
 const CHUNK_SIZE: i32 = 500;
-const STARS_PER_CHUNK: u32 = 30;
+const STARS_PER_CHUNK: u32 = 10;
 
 #[macroquad::main("Space Game")]
 async fn main() {
