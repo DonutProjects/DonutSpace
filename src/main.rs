@@ -4,9 +4,10 @@ use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
 
 const SHIP_SIZE: f32 = 64.0;
-const SHIP_SPEED: f32 = 150.0;
+const SHIP_SPEED: f32 = 350.0;
 const FRICTION: f32 = 0.95;
 const MAX_SPEED: f32 = 200.0;
+const ROTATION_SPEED: f32 = 3.0; // radians per second
 const CHUNK_SIZE: i32 = 500;
 const STARS_PER_CHUNK: u32 = 30;
 
@@ -115,7 +116,17 @@ impl GameState {
             if dist > 50.0 {
                 self.ship.vx += (dx / dist) * SHIP_SPEED * dt;
                 self.ship.vy += (dy / dist) * SHIP_SPEED * dt;
-                self.ship.rotation = dy.atan2(dx);
+
+                // Smooth rotation towards target
+                let desired_rotation = dy.atan2(dx);
+                let mut angle_diff = (desired_rotation - self.ship.rotation).rem_euclid(2.0 * std::f32::consts::PI);
+                if angle_diff > std::f32::consts::PI {
+                    angle_diff -= 2.0 * std::f32::consts::PI;
+                }
+                let rotation_dir = angle_diff.signum();
+                let rotation_amount = (angle_diff.abs()).min(ROTATION_SPEED * dt);
+                self.ship.rotation += rotation_dir * rotation_amount;
+                self.ship.rotation = self.ship.rotation.rem_euclid(2.0 * std::f32::consts::PI);
             } else {
                 self.target_x = None;
                 self.target_y = None;
@@ -129,6 +140,11 @@ impl GameState {
         if speed > MAX_SPEED {
             self.ship.vx = (self.ship.vx / speed) * MAX_SPEED;
             self.ship.vy = (self.ship.vy / speed) * MAX_SPEED;
+        }
+
+        // Face direction of movement (towards target)
+        if speed > 1.0 {
+            self.ship.rotation = self.ship.vy.atan2(self.ship.vx);
         }
 
         self.ship.x += self.ship.vx * dt;
@@ -180,8 +196,9 @@ impl GameState {
             WHITE,
             DrawTextureParams {
                 dest_size: Some(Vec2::new(SHIP_SIZE, SHIP_SIZE)),
-                pivot: Some(Vec2::new(0.5, 0.5)),
-                rotation: self.ship.rotation - std::f32::consts::FRAC_PI_2,
+                // Pivot in screen-space: rotate around ship center
+                pivot: Some(Vec2::new(ship_screen_x, ship_screen_y)),
+                rotation: self.ship.rotation + std::f32::consts::PI - std::f32::consts::FRAC_PI_2,
                 ..Default::default()
             },
         );
