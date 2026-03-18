@@ -2,15 +2,14 @@ mod camera;
 mod game;
 mod ship;
 mod star;
-
 use macroquad::prelude::*;
 
 const SHIP_SIZE: f32 = 64.0;
-const SHIP_SPEED: f32 = 500.0;
+const SHIP_SPEED: f32 = 1000.0;
 const FRICTION: f32 = 0.95;
 const MAX_SPEED: f32 = 1000.0;
 const CHUNK_SIZE: i32 = 500;
-const STARS_PER_CHUNK: u32 = 10;
+const STARS_PER_CHUNK: u32 = 1;
 
 #[macroquad::main("Space Game")]
 async fn main() {

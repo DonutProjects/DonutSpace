@@ -5,6 +5,13 @@ use crate::camera::Camera;
 use crate::ship::Ship;
 use crate::star::StarChunk;
 
+// Engine positions relative to texture center (pixels)
+const TEXTURE_WIDTH: f32 = 282.0;
+const ENGINE1_DX: f32 = -48.5; // from center
+const ENGINE1_DY: f32 = 136.5;
+const ENGINE2_DX: f32 = 47.5;
+const ENGINE2_DY: f32 = 136.5;
+
 pub struct GameState {
     pub ship: Ship,
     pub camera: Camera,
@@ -56,14 +63,23 @@ impl GameState {
         for key in visible_keys {
             let dist_x = (key.0 - center_cx).abs();
             let dist_y = (key.1 - center_cy).abs();
-            if dist_x > view_radius + 2 || dist_y > view_radius + 2 {
+            if dist_x > view_radius + 5 || dist_y > view_radius + 5 {
                 self.chunks.remove(&key);
             }
         }
     }
 
     pub fn update(&mut self, dt: f32) {
-        // Handle zoom
+        // Handle zoom with mouse wheel
+        let (_, wheel_y) = mouse_wheel();
+        if wheel_y > 0.0 {
+            self.camera.zoom *= 1.1;
+        } else if wheel_y < 0.0 {
+            self.camera.zoom /= 1.1;
+            if self.camera.zoom < 0.1 { self.camera.zoom = 0.1; }
+        }
+
+        // Handle zoom with keys (optional)
         if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd) {
             self.camera.zoom *= 1.1;
         }
@@ -124,10 +140,10 @@ impl GameState {
                 let screen_x = (world_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
                 let screen_y = (world_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
 
-                if screen_x > -10.0 && screen_x < screen_w + 10.0
-                    && screen_y > -10.0 && screen_y < screen_h + 10.0
+                if screen_x > -50.0 && screen_x < screen_w + 50.0
+                    && screen_y > -50.0 && screen_y < screen_h + 50.0
                 {
-                    let draw_size = star.size.clamp(0.5, 10.0);
+                    let draw_size = star.size;
                     draw_circle(screen_x, screen_y, draw_size, Color::new(
                         star.brightness,
                         star.brightness,
@@ -156,6 +172,46 @@ impl GameState {
                 ..Default::default()
             },
         );
+
+        // Draw engine flames
+        let speed = (self.ship.vx * self.ship.vx + self.ship.vy * self.ship.vy).sqrt();
+        if speed > 1.0 {
+            let scale = self.ship.size / TEXTURE_WIDTH;
+            let dx1 = ENGINE1_DX * scale;
+            let dy1 = ENGINE1_DY * scale;
+            let dx2 = ENGINE2_DX * scale;
+            let dy2 = ENGINE2_DY * scale;
+
+            let cos_r = self.ship.rotation.cos();
+            let sin_r = self.ship.rotation.sin();
+
+            // Calculate engine positions in world space
+            let ex1 = self.ship.x + dx1 * cos_r - dy1 * sin_r;
+            let ey1 = self.ship.y + dx1 * sin_r + dy1 * cos_r;
+            let ex2 = self.ship.x + dx2 * cos_r - dy2 * sin_r;
+            let ey2 = self.ship.y + dx2 * sin_r + dy2 * cos_r;
+
+            // Offset flames backward (opposite to movement direction)
+            let flame_offset = (speed / super::MAX_SPEED * 30.0).min(30.0);
+            let flame_dir_x = self.ship.vx / speed * flame_offset;
+            let flame_dir_y = self.ship.vy / speed * flame_offset;
+
+            let flame1_x = ex1 + flame_dir_x;
+            let flame1_y = ey1 + flame_dir_y;
+            let flame2_x = ex2 + flame_dir_x;
+            let flame2_y = ey2 + flame_dir_y;
+
+            // Convert to screen space
+            let flame_screen1_x = (flame1_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
+            let flame_screen1_y = (flame1_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
+            let flame_screen2_x = (flame2_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
+            let flame_screen2_y = (flame2_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
+
+            let flame_size = (speed / super::MAX_SPEED * 8.0 + 2.0).min(10.0) * self.camera.zoom;
+            
+            draw_circle(flame_screen1_x, flame_screen1_y, flame_size, ORANGE);
+            draw_circle(flame_screen2_x, flame_screen2_y, flame_size, RED);
+        }
 
         draw_text(
             &format!("Pos: {:.0}, {:.0}", self.ship.x, self.ship.y),
