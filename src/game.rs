@@ -173,44 +173,65 @@ impl GameState {
             },
         );
 
-        // Draw engine flames
+        // Draw engine flames (size fixed on screen; unaffected by zoom)
         let speed = (self.ship.vx * self.ship.vx + self.ship.vy * self.ship.vy).sqrt();
         if speed > 1.0 {
+            // Use the same rotation as the rendered ship texture so flames stay attached to the engines.
+            let render_rot = self.ship.rotation + std::f32::consts::PI - std::f32::consts::FRAC_PI_2;
             let scale = self.ship.size / TEXTURE_WIDTH;
-            let dx1 = ENGINE1_DX * scale;
-            let dy1 = ENGINE1_DY * scale;
-            let dx2 = ENGINE2_DX * scale;
-            let dy2 = ENGINE2_DY * scale;
+            let cos_r = render_rot.cos();
+            let sin_r = render_rot.sin();
 
-            let cos_r = self.ship.rotation.cos();
-            let sin_r = self.ship.rotation.sin();
+            let ex1 = self.ship.x + (ENGINE1_DX * scale) * cos_r - (ENGINE1_DY * scale) * sin_r;
+            let ey1 = self.ship.y + (ENGINE1_DX * scale) * sin_r + (ENGINE1_DY * scale) * cos_r;
+            let ex2 = self.ship.x + (ENGINE2_DX * scale) * cos_r - (ENGINE2_DY * scale) * sin_r;
+            let ey2 = self.ship.y + (ENGINE2_DX * scale) * sin_r + (ENGINE2_DY * scale) * cos_r;
 
-            // Calculate engine positions in world space
-            let ex1 = self.ship.x + dx1 * cos_r - dy1 * sin_r;
-            let ey1 = self.ship.y + dx1 * sin_r + dy1 * cos_r;
-            let ex2 = self.ship.x + dx2 * cos_r - dy2 * sin_r;
-            let ey2 = self.ship.y + dx2 * sin_r + dy2 * cos_r;
+            // Flame size tied to ship's screen size and speed (varies more with speed)
+            let ship_screen_size = self.ship.size * self.camera.zoom;
+            let speed_ratio = (speed / 200.0).clamp(0.5, 2.0); // allows lengthening up to 2x at high speeds
+            let flame_len = 0.4 * ship_screen_size * speed_ratio;
+            let flame_width = 0.1 * ship_screen_size;
 
-            // Offset flames backward (opposite to movement direction)
-            let flame_offset = (speed / super::MAX_SPEED * 30.0).min(30.0);
-            let flame_dir_x = self.ship.vx / speed * flame_offset;
-            let flame_dir_y = self.ship.vy / speed * flame_offset;
+            // Direction in screen space (match rendered ship orientation)
+            let dir_x = render_rot.cos();
+            let dir_y = render_rot.sin();
+            // Rotate flame direction 90° CW (so it points downward on screen)
+            let back_x = -dir_y;
+            let back_y = dir_x;
+            let perp_x = -back_y;
+            let perp_y = back_x;
 
-            let flame1_x = ex1 + flame_dir_x;
-            let flame1_y = ey1 + flame_dir_y;
-            let flame2_x = ex2 + flame_dir_x;
-            let flame2_y = ey2 + flame_dir_y;
+            let draw_flame = |base_world_x: f32, base_world_y: f32| {
+                let base_sx = (base_world_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
+                let base_sy = (base_world_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
 
-            // Convert to screen space
-            let flame_screen1_x = (flame1_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
-            let flame_screen1_y = (flame1_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
-            let flame_screen2_x = (flame2_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
-            let flame_screen2_y = (flame2_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
+                let tip_sx = base_sx + back_x * flame_len;
+                let tip_sy = base_sy + back_y * flame_len;
 
-            let flame_size = (speed / super::MAX_SPEED * 8.0 + 2.0).min(10.0) * self.camera.zoom;
-            
-            draw_circle(flame_screen1_x, flame_screen1_y, flame_size, ORANGE);
-            draw_circle(flame_screen2_x, flame_screen2_y, flame_size, RED);
+                let base1_sx = base_sx + perp_x * flame_width;
+                let base1_sy = base_sy + perp_y * flame_width;
+                let base2_sx = base_sx - perp_x * flame_width;
+                let base2_sy = base_sy - perp_y * flame_width;
+
+                // Outer glow
+                draw_triangle(
+                    vec2(base1_sx, base1_sy),
+                    vec2(base2_sx, base2_sy),
+                    vec2(tip_sx, tip_sy),
+                    Color::new(1.0, 0.6, 0.0, 0.5),
+                );
+                // Inner core
+                draw_triangle(
+                    vec2(base1_sx, base1_sy),
+                    vec2(base2_sx, base2_sy),
+                    vec2(tip_sx, tip_sy),
+                    Color::new(1.0, 0.9, 0.2, 0.7),
+                );
+            };
+
+            draw_flame(ex1, ey1);
+            draw_flame(ex2, ey2);
         }
 
         draw_text(
