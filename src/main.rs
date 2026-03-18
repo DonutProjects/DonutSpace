@@ -4,9 +4,9 @@ use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
 
 const SHIP_SIZE: f32 = 64.0;
-const SHIP_SPEED: f32 = 350.0;
+const SHIP_SPEED: f32 = 500.0;
 const FRICTION: f32 = 0.95;
-const MAX_SPEED: f32 = 200.0;
+const MAX_SPEED: f32 = 1000.0;
 const ROTATION_SPEED: f32 = 3.0; // radians per second
 const CHUNK_SIZE: i32 = 500;
 const STARS_PER_CHUNK: u32 = 30;
@@ -17,11 +17,13 @@ struct Ship {
     vx: f32,
     vy: f32,
     rotation: f32,
+    size: f32,
 }
 
 struct Camera {
     x: f32,
     y: f32,
+    zoom: f32,
 }
 
 struct Star {
@@ -71,8 +73,9 @@ impl GameState {
                 vx: 0.0,
                 vy: 0.0,
                 rotation: 0.0,
+                size: SHIP_SIZE,
             },
-            camera: Camera { x: 0.0, y: 0.0 },
+            camera: Camera { x: 0.0, y: 0.0, zoom: 1.0 },
             chunks: HashMap::new(),
             target_x: None,
             target_y: None,
@@ -108,6 +111,15 @@ impl GameState {
     }
 
     fn update(&mut self, dt: f32) {
+        // Handle zoom
+        if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd) {
+            self.camera.zoom *= 1.1;
+        }
+        if is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::KpSubtract) {
+            self.camera.zoom /= 1.1;
+            if self.camera.zoom < 0.1 { self.camera.zoom = 0.1; }
+        }
+
         if let (Some(tx), Some(ty)) = (self.target_x, self.target_y) {
             let dx = tx - self.ship.x;
             let dy = ty - self.ship.y;
@@ -160,21 +172,23 @@ impl GameState {
         clear_background(BLACK);
 
         let (screen_w, screen_h) = (screen_width(), screen_height());
-        let offset_x = screen_w / 2.0 - self.camera.x;
-        let offset_y = screen_h / 2.0 - self.camera.y;
+        let offset_x = screen_w / 2.0 - self.camera.x * self.camera.zoom;
+        let offset_y = screen_h / 2.0 - self.camera.y * self.camera.zoom;
 
         for ((cx, cy), chunk) in &self.chunks {
             let chunk_world_x = *cx as f32 * CHUNK_SIZE as f32;
             let chunk_world_y = *cy as f32 * CHUNK_SIZE as f32;
 
             for star in &chunk.stars {
-                let screen_x = star.x + chunk_world_x + offset_x;
-                let screen_y = star.y + chunk_world_y + offset_y;
+                let world_x = star.x + chunk_world_x;
+                let world_y = star.y + chunk_world_y;
+                let screen_x = (world_x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
+                let screen_y = (world_y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
 
                 if screen_x > -10.0 && screen_x < screen_w + 10.0
                     && screen_y > -10.0 && screen_y < screen_h + 10.0
                 {
-                    draw_circle(screen_x, screen_y, star.size, Color::new(
+                    draw_circle(screen_x, screen_y, star.size * self.camera.zoom, Color::new(
                         star.brightness,
                         star.brightness,
                         star.brightness,
@@ -184,18 +198,18 @@ impl GameState {
             }
         }
 
-        let ship_screen_x = self.ship.x + offset_x;
-        let ship_screen_y = self.ship.y + offset_y;
+        let ship_screen_x = (self.ship.x - self.camera.x) * self.camera.zoom + screen_w / 2.0;
+        let ship_screen_y = (self.ship.y - self.camera.y) * self.camera.zoom + screen_h / 2.0;
 
         let vx = (self.ship.vx * self.ship.vx + self.ship.vy * self.ship.vy).sqrt();
 
         draw_texture_ex(
             &self.ship_texture,
-            ship_screen_x - SHIP_SIZE / 2.0,
-            ship_screen_y - SHIP_SIZE / 2.0,
+            ship_screen_x - self.ship.size * self.camera.zoom / 2.0,
+            ship_screen_y - self.ship.size * self.camera.zoom / 2.0,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(Vec2::new(SHIP_SIZE, SHIP_SIZE)),
+                dest_size: Some(Vec2::new(self.ship.size * self.camera.zoom, self.ship.size * self.camera.zoom)),
                 // Pivot in screen-space: rotate around ship center
                 pivot: Some(Vec2::new(ship_screen_x, ship_screen_y)),
                 rotation: self.ship.rotation + std::f32::consts::PI - std::f32::consts::FRAC_PI_2,
@@ -224,6 +238,35 @@ impl GameState {
             20.0,
             WHITE,
         );
+        draw_text(
+            &format!("Zoom: {:.2}x", self.camera.zoom),
+            10.0,
+            95.0,
+            20.0,
+            WHITE,
+        );
+
+        if let (Some(tx), Some(ty)) = (self.target_x, self.target_y) {
+            let dist = ((tx - self.ship.x).powi(2) + (ty - self.ship.y).powi(2)).sqrt();
+            let dist_text = if dist < 1000.0 {
+                format!("Distance: {:.0} m", dist)
+            } else if dist < 1_000_000.0 {
+                format!("Distance: {:.2} km", dist / 1000.0)
+            } else {
+                format!("Distance: {:.4} Mm", dist / 1_000_000.0)
+            };
+            draw_text(
+                &dist_text,
+                10.0,
+                120.0,
+                20.0,
+                GREEN,
+            );
+
+            let target_screen_x = (tx - self.camera.x) * self.camera.zoom + screen_w / 2.0;
+            let target_screen_y = (ty - self.camera.y) * self.camera.zoom + screen_h / 2.0;
+            draw_circle_lines(target_screen_x, target_screen_y, 10.0 * self.camera.zoom, 2.0, GREEN);
+        }
 
         if self.target_x.is_some() {
             let tx = self.target_x.unwrap() + offset_x;
@@ -231,7 +274,7 @@ impl GameState {
             draw_circle_lines(tx, ty, 10.0, 2.0, GREEN);
         }
 
-        draw_text("Click to move", 10.0, screen_h - 20.0, 20.0, GRAY);
+        draw_text("Click to move, +/- to zoom", 10.0, screen_h - 20.0, 20.0, GRAY);
     }
 }
 
