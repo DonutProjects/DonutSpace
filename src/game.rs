@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::camera::Camera;
 use crate::ship::Ship;
-use crate::star::StarChunk;
+use crate::star::{Planet, StarChunk, StarSystem, Station};
 use crate::ui::UIPanel;
 
 // Engine positions relative to texture center (pixels)
@@ -20,33 +20,55 @@ pub struct GameState {
     pub target_x: Option<f32>,
     pub target_y: Option<f32>,
     pub ship_texture: Texture2D,
+    pub station_texture: Option<Texture2D>,
     pub ui: UIPanel,
 }
 
 impl GameState {
     pub async fn new() -> Self {
         let ship_texture = load_texture("src/ship1.png").await.unwrap();
+        let station_texture = load_optional_texture(&[
+            "src/station.png",
+            "src/station1.png",
+            "src/icons/station.png",
+            "src/icons/station1.png",
+        ])
+        .await;
+        let mut chunks = HashMap::new();
+        let hub_chunk = StarChunk::new(0, 0, 0);
+        let spawn_position = hub_chunk
+            .systems
+            .iter()
+            .find(|system| system.is_trade_hub)
+            .and_then(|system| system.first_station_world_position(0, 0))
+            .unwrap_or((super::CHUNK_SIZE as f32 * 0.5, super::CHUNK_SIZE as f32 * 0.5));
+        chunks.insert((0, 0), hub_chunk);
 
         Self {
             ship: Ship {
-                x: 0.0,
-                y: 0.0,
+                x: spawn_position.0 + 4_500.0,
+                y: spawn_position.1 + 2_000.0,
                 vx: 0.0,
                 vy: 0.0,
                 rotation: 0.0,
                 size: super::SHIP_SIZE,
             },
-            camera: Camera { x: 0.0, y: 0.0, zoom: 1.0 },
-            chunks: HashMap::new(),
+            camera: Camera {
+                x: spawn_position.0,
+                y: spawn_position.1,
+                zoom: 0.0025,
+            },
+            chunks,
             target_x: None,
             target_y: None,
             ship_texture,
+            station_texture,
             ui: UIPanel::new(screen_width(), screen_height()).await,
         }
     }
 
     pub fn update_chunks(&mut self) {
-        let view_radius = 10;
+        let view_radius = 2;
         let center_cx = (self.camera.x / super::CHUNK_SIZE as f32).floor() as i32;
         let center_cy = (self.camera.y / super::CHUNK_SIZE as f32).floor() as i32;
 
@@ -57,7 +79,7 @@ impl GameState {
                 let key = (cx, cy);
                 if !self.chunks.contains_key(&key) {
                     let seed = cx as i64 * 1000000 + cy as i64;
-                    self.chunks.insert(key, StarChunk::new(seed));
+                    self.chunks.insert(key, StarChunk::new(seed, cx, cy));
                 }
             }
         }
@@ -79,7 +101,7 @@ impl GameState {
             self.camera.zoom *= 1.1;
         } else if wheel_y < 0.0 {
             self.camera.zoom /= 1.1;
-            if self.camera.zoom < 0.1 { self.camera.zoom = 0.1; }
+            if self.camera.zoom < 0.0002 { self.camera.zoom = 0.0002; }
         }
 
         // Handle zoom with keys (optional)
@@ -88,7 +110,7 @@ impl GameState {
         }
         if is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::KpSubtract) {
             self.camera.zoom /= 1.1;
-            if self.camera.zoom < 0.1 { self.camera.zoom = 0.1; }
+            if self.camera.zoom < 0.0002 { self.camera.zoom = 0.0002; }
         }
 
         if let (Some(tx), Some(ty)) = (self.target_x, self.target_y) {
@@ -154,6 +176,12 @@ impl GameState {
                         1.0
                     ));
                 }
+            }
+
+            for system in &chunk.systems {
+                let system_world_x = chunk_world_x + system.x;
+                let system_world_y = chunk_world_y + system.y;
+                self.draw_star_system(system, system_world_x, system_world_y, screen_w, screen_h);
             }
         }
 
@@ -259,9 +287,36 @@ impl GameState {
             WHITE,
         );
         draw_text(
-            &format!("Zoom: {:.2}x", self.camera.zoom),
+            &format!("Systems: {}", self.chunks.values().map(|chunk| chunk.systems.len()).sum::<usize>()),
             10.0,
             95.0,
+            20.0,
+            WHITE,
+        );
+        draw_text(
+            &format!(
+                "Stations: {}",
+                self.chunks
+                    .values()
+                    .flat_map(|chunk| &chunk.systems)
+                    .map(|system| {
+                        system
+                            .planets
+                            .iter()
+                            .map(|planet| planet.stations.len())
+                            .sum::<usize>()
+                    })
+                    .sum::<usize>()
+            ),
+            10.0,
+            120.0,
+            20.0,
+            WHITE,
+        );
+        draw_text(
+            &format!("Zoom: {:.2}x", self.camera.zoom),
+            10.0,
+            145.0,
             20.0,
             WHITE,
         );
@@ -278,7 +333,7 @@ impl GameState {
             draw_text(
                 &dist_text,
                 10.0,
-                120.0,
+                170.0,
                 20.0,
                 GREEN,
             );
@@ -292,4 +347,189 @@ impl GameState {
 
         self.ui.draw();
     }
+
+    fn draw_star_system(
+        &self,
+        system: &StarSystem,
+        system_world_x: f32,
+        system_world_y: f32,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        let center = world_to_screen(system_world_x, system_world_y, &self.camera, screen_w, screen_h);
+        if center.x < -300.0 || center.x > screen_w + 300.0 || center.y < -300.0 || center.y > screen_h + 300.0 {
+            return;
+        }
+
+        let star_color = Color::new(system.star_color.0, system.star_color.1, system.star_color.2, 1.0);
+        let glow_radius = (system.star_radius * self.camera.zoom * 2.4).max(16.0);
+        draw_circle(
+            center.x,
+            center.y,
+            glow_radius,
+            Color::new(system.star_color.0, system.star_color.1, system.star_color.2, 0.12),
+        );
+        draw_circle(
+            center.x,
+            center.y,
+            (system.star_radius * self.camera.zoom).max(4.0),
+            star_color,
+        );
+
+        for planet in &system.planets {
+            self.draw_planet(system, planet, system_world_x, system_world_y, screen_w, screen_h);
+        }
+
+        if system.is_trade_hub && self.camera.zoom > 0.35 {
+            let label = "Trade Hub";
+            let dims = measure_text(label, None, 18, 1.0);
+            draw_text(
+                label,
+                center.x - dims.width / 2.0,
+                center.y - glow_radius - 12.0,
+                18.0,
+                Color::new(0.98, 0.88, 0.56, 1.0),
+            );
+        }
+    }
+
+    fn draw_planet(
+        &self,
+        system: &StarSystem,
+        planet: &Planet,
+        system_world_x: f32,
+        system_world_y: f32,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        let orbit_offset = vec2(
+            planet.orbit_radius * planet.angle.cos(),
+            planet.orbit_radius * planet.angle.sin(),
+        );
+        let planet_world_x = system_world_x + orbit_offset.x;
+        let planet_world_y = system_world_y + orbit_offset.y;
+        let planet_screen = world_to_screen(planet_world_x, planet_world_y, &self.camera, screen_w, screen_h);
+
+        if self.camera.zoom > 0.22 {
+            let system_screen = world_to_screen(system_world_x, system_world_y, &self.camera, screen_w, screen_h);
+            draw_circle_lines(
+                system_screen.x,
+                system_screen.y,
+                planet.orbit_radius * self.camera.zoom,
+                1.0,
+                Color::new(0.14, 0.18, 0.24, 0.55),
+            );
+        }
+
+        let planet_color = Color::new(planet.color.0, planet.color.1, planet.color.2, 1.0);
+        draw_circle(
+            planet_screen.x,
+            planet_screen.y,
+            (planet.size * self.camera.zoom).max(3.0),
+            planet_color,
+        );
+
+        if system.is_trade_hub && self.camera.zoom > 0.45 && !planet.stations.is_empty() {
+            draw_circle_lines(
+                planet_screen.x,
+                planet_screen.y,
+                (planet.size * self.camera.zoom).max(3.0) + 4.0,
+                1.0,
+                Color::new(0.95, 0.80, 0.48, 0.6),
+            );
+        }
+
+        for station in &planet.stations {
+            self.draw_station(planet_world_x, planet_world_y, planet, station, screen_w, screen_h);
+        }
+    }
+
+    fn draw_station(
+        &self,
+        planet_world_x: f32,
+        planet_world_y: f32,
+        planet: &Planet,
+        station: &Station,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        let station_world_x = planet_world_x + station.orbit_radius * station.angle.cos();
+        let station_world_y = planet_world_y + station.orbit_radius * station.angle.sin();
+        let station_screen = world_to_screen(station_world_x, station_world_y, &self.camera, screen_w, screen_h);
+        let planet_screen = world_to_screen(planet_world_x, planet_world_y, &self.camera, screen_w, screen_h);
+
+        if self.camera.zoom > 0.45 {
+            draw_line(
+                planet_screen.x,
+                planet_screen.y,
+                station_screen.x,
+                station_screen.y,
+                1.0,
+                Color::new(0.35, 0.45, 0.56, 0.45),
+            );
+        }
+
+        let station_size = (station.size * self.camera.zoom).max(8.0);
+        if let Some(texture) = &self.station_texture {
+            draw_texture_ex(
+                texture,
+                station_screen.x - station_size / 2.0,
+                station_screen.y - station_size / 2.0,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(Vec2::new(station_size, station_size)),
+                    rotation: station.angle,
+                    ..Default::default()
+                },
+            );
+        } else {
+            // Fallback so generation still works if the station sprite file is absent in the repo.
+            draw_circle(
+                station_screen.x,
+                station_screen.y,
+                station_size * 0.38,
+                Color::new(0.72, 0.78, 0.85, 1.0),
+            );
+            draw_rectangle(
+                station_screen.x - station_size * 0.45,
+                station_screen.y - station_size * 0.12,
+                station_size * 0.9,
+                station_size * 0.24,
+                Color::new(0.50, 0.58, 0.68, 1.0),
+            );
+            draw_rectangle(
+                station_screen.x - station_size * 0.12,
+                station_screen.y - station_size * 0.45,
+                station_size * 0.24,
+                station_size * 0.9,
+                Color::new(0.50, 0.58, 0.68, 1.0),
+            );
+        }
+
+        if self.camera.zoom > 0.9 {
+            draw_circle_lines(
+                planet_screen.x,
+                planet_screen.y,
+                (planet.size + station.orbit_radius) * self.camera.zoom,
+                1.0,
+                Color::new(0.18, 0.24, 0.30, 0.25),
+            );
+        }
+    }
+}
+
+fn world_to_screen(world_x: f32, world_y: f32, camera: &Camera, screen_w: f32, screen_h: f32) -> Vec2 {
+    vec2(
+        (world_x - camera.x) * camera.zoom + screen_w / 2.0,
+        (world_y - camera.y) * camera.zoom + screen_h / 2.0,
+    )
+}
+
+async fn load_optional_texture(paths: &[&str]) -> Option<Texture2D> {
+    for path in paths {
+        if let Ok(texture) = load_texture(path).await {
+            return Some(texture);
+        }
+    }
+    None
 }
