@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::camera::Camera;
 use crate::ship::Ship;
 use crate::star::StarChunk;
+use crate::ui::UIPanel;
 
 // Engine positions relative to texture center (pixels)
 const TEXTURE_WIDTH: f32 = 282.0;
@@ -19,6 +20,7 @@ pub struct GameState {
     pub target_x: Option<f32>,
     pub target_y: Option<f32>,
     pub ship_texture: Texture2D,
+    pub ui: UIPanel,
 }
 
 impl GameState {
@@ -39,6 +41,7 @@ impl GameState {
             target_x: None,
             target_y: None,
             ship_texture,
+            ui: UIPanel::new(screen_width(), screen_height()).await,
         }
     }
 
@@ -286,5 +289,7 @@ impl GameState {
         }
 
         draw_text("Click to move, +/- to zoom", 10.0, screen_h - 20.0, 20.0, GRAY);
+
+        self.ui.draw();
     }
 }
