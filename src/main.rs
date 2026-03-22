@@ -19,6 +19,8 @@ const THRUST_RAMP_DOWN: f32 = 2.8;
 const MAP_NODE_RADIUS: f32 = 18.0;
 const MAP_LEFT_SHIFT: f32 = -150.0;
 const MAP_INFO_SHIFT: f32 = 345.0;
+const MAP_PREVIEW_SCALE: f32 = 1.7;
+const MAP_PREVIEW_Z: f32 = 151.5;
 const PLANET_RENDER_Z: f32 = -5.0;
 const STATION_RENDER_Z: f32 = -4.0;
 
@@ -381,9 +383,13 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, galaxy: Res<Gal
         MapInfoStationsText,
     ));
 
+    let mut preview_sprite =
+        Sprite::from_image(asset_server.load(galaxy.systems[galaxy.selected_system].planet_sprite));
+    preview_sprite.color = Color::srgba(1.0, 1.0, 1.0, 0.36);
+
     commands.spawn((
-        Sprite::from_image(asset_server.load(galaxy.systems[galaxy.selected_system].planet_sprite)),
-        Transform::from_xyz(345.0, 85.0, 154.0).with_scale(Vec3::splat(2.4)),
+        preview_sprite,
+        Transform::from_xyz(410.0, 70.0, MAP_PREVIEW_Z).with_scale(Vec3::splat(MAP_PREVIEW_SCALE)),
         Visibility::Hidden,
         MapElement,
         MapPlanetPreview,
@@ -815,7 +821,9 @@ fn update_map_planet_preview_system(
 
     if let Ok((mut sprite, mut transform, mut map_visibility)) = planet_query.single_mut() {
         sprite.image = asset_server.load(selected.planet_sprite);
-        transform.translation = (camera_center + Vec2::new(345.0, 85.0)).extend(154.0);
+        sprite.color = Color::srgba(1.0, 1.0, 1.0, 0.36);
+        transform.translation = (camera_center + Vec2::new(410.0, 70.0)).extend(MAP_PREVIEW_Z);
+        transform.scale = Vec3::splat(MAP_PREVIEW_SCALE);
         *map_visibility = visible;
     }
 }
