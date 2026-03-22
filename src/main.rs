@@ -10,6 +10,16 @@ const SHIP_MAX_SPEED: f32 = 520.0;
 const CAMERA_LERP: f32 = 6.5;
 const SHIP_SCALE: f32 = 0.18;
 const TURN_SPEED: f32 = 4.8;
+const WARP_ACCELERATION: f32 = 2400.0;
+const WARP_BRAKE_ACCELERATION: f32 = 1800.0;
+const WARP_MAX_SPEED: f32 = 7600.0;
+const WARP_ENTRY_SPEED: f32 = 1500.0;
+const WARP_DEPART_DISTANCE: f32 = 7200.0;
+const WARP_ARRIVAL_DISTANCE: f32 = 24000.0;
+const WARP_ARRIVAL_RADIUS: f32 = 520.0;
+const WARP_FINISH_RADIUS: f32 = 22.0;
+const WARP_GUIDANCE: f32 = 1.85;
+const WARP_ALIGNMENT_EPSILON: f32 = 0.03;
 const ENGINE_OFFSET_X: f32 = 48.5;
 const ENGINE_OFFSET_Y: f32 = -136.5;
 const FLAME_BASE_LENGTH: f32 = 16.0;
@@ -112,6 +122,26 @@ struct GalaxyMap {
     map_open: bool,
 }
 
+#[derive(Resource, Default)]
+struct WarpDrive {
+    active: bool,
+    phase: WarpPhase,
+    target_system: usize,
+    departure_origin: Vec2,
+    travel_direction: Vec2,
+    arrival_point: Vec2,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum WarpPhase {
+    #[default]
+    Idle,
+    Align,
+    Depart,
+    Cruise,
+    Arrive,
+}
+
 #[derive(Clone)]
 struct SystemDefinition {
     name: &'static str,
@@ -159,6 +189,7 @@ fn main() {
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.01, 0.015, 0.03)))
         .insert_resource(authored_galaxy())
+        .insert_resource(WarpDrive::default())
         .add_plugins(
             DefaultPlugins
                 .set(ImagePlugin::default_nearest())
@@ -177,9 +208,16 @@ fn main() {
             Update,
             (
                 map_input_system,
+                warp_travel_system,
                 player_input_system,
                 engine_flame_system,
                 camera_follow_system,
+            )
+                .chain(),
+        )
+        .add_systems(
+            Update,
+            (
                 update_map_panels_system,
                 update_map_nodes_system,
                 update_map_title_system,
@@ -421,12 +459,16 @@ fn map_input_system(
     primary_window: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), (With<MainCamera>, Without<Player>)>,
     asset_server: Res<AssetServer>,
-    mut clear_color: ResMut<ClearColor>,
     mut galaxy: ResMut<GalaxyMap>,
+    mut warp: ResMut<WarpDrive>,
     mut player_query: Query<(&mut Transform, &mut Velocity, &mut ThrusterState), (With<Player>, Without<MainCamera>)>,
-    mut star_query: Query<(&StarfieldStar, &mut Sprite), Without<MapPlanetPreview>>,
     mut preview_query: Query<&mut Sprite, (With<MapPlanetPreview>, Without<StarfieldStar>)>,
 ) {
+    if warp.active {
+        galaxy.map_open = false;
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::Tab) {
         galaxy.map_open = !galaxy.map_open;
     }
@@ -455,14 +497,11 @@ fn map_input_system(
                     let node_position = map_center + Vec2::new(MAP_LEFT_SHIFT, 0.0) + system.map_position;
                     if cursor_world.distance(node_position) <= MAP_NODE_RADIUS {
                         if galaxy.selected_system == index && galaxy.current_system != index {
-                            warp_to_system(
+                            begin_warp(
                                 index,
                                 &mut galaxy,
-                                &asset_server,
-                                &mut clear_color,
+                                &mut warp,
                                 &mut player_query,
-                                &mut star_query,
-                                &mut preview_query,
                             );
                         } else {
                             galaxy.selected_system = index;
@@ -478,49 +517,175 @@ fn map_input_system(
     }
 
     if keyboard.just_pressed(KeyCode::Enter) && galaxy.current_system != galaxy.selected_system {
-        warp_to_system(
+        begin_warp(
             galaxy.selected_system,
             &mut galaxy,
-            &asset_server,
-            &mut clear_color,
+            &mut warp,
             &mut player_query,
-            &mut star_query,
-            &mut preview_query,
         );
     }
 }
 
-fn warp_to_system(
+fn begin_warp(
     target_index: usize,
     galaxy: &mut GalaxyMap,
-    asset_server: &AssetServer,
-    clear_color: &mut ClearColor,
+    warp: &mut WarpDrive,
     player_query: &mut Query<(&mut Transform, &mut Velocity, &mut ThrusterState), (With<Player>, Without<MainCamera>)>,
-    star_query: &mut Query<(&StarfieldStar, &mut Sprite), Without<MapPlanetPreview>>,
-    preview_query: &mut Query<&mut Sprite, (With<MapPlanetPreview>, Without<StarfieldStar>)>,
 ) {
-    galaxy.current_system = target_index;
+    if target_index == galaxy.current_system || warp.active {
+        return;
+    }
+
     galaxy.selected_system = target_index;
     galaxy.map_open = false;
+    if let Ok((transform, mut velocity, mut thruster_state)) = player_query.single_mut() {
+        let current_map_pos = galaxy.systems[galaxy.current_system].map_position;
+        let target_map_pos = galaxy.systems[target_index].map_position;
+        let travel_direction = (target_map_pos - current_map_pos).normalize_or_zero();
 
-    let system = &galaxy.systems[target_index];
-    clear_color.0 = system.sky_color;
+        warp.active = true;
+        warp.phase = WarpPhase::Align;
+        warp.target_system = target_index;
+        warp.departure_origin = transform.translation.truncate();
+        warp.travel_direction = if travel_direction.length_squared() > 0.0 {
+            travel_direction
+        } else {
+            Vec2::X
+        };
+        warp.arrival_point = warp_arrival_point(&galaxy.systems[target_index], target_index);
 
-    if let Ok((mut transform, mut velocity, mut thruster_state)) = player_query.single_mut() {
-        transform.translation.x = 0.0;
-        transform.translation.y = 0.0;
-        velocity.0 = Vec2::ZERO;
+        velocity.0 *= 0.2;
         thruster_state.thrusting = false;
         thruster_state.intensity = 0.0;
     }
+}
 
-    for (star, mut sprite) in star_query.iter_mut() {
-        sprite.color = tint_star(system.star_color, star.brightness);
-        sprite.custom_size = Some(Vec2::splat(star.size));
+fn warp_travel_system(
+    time: Res<Time>,
+    mut clear_color: ResMut<ClearColor>,
+    mut galaxy: ResMut<GalaxyMap>,
+    mut warp: ResMut<WarpDrive>,
+    mut player_query: Query<(&mut Transform, &mut Velocity, &mut ThrusterState), With<Player>>,
+    mut star_query: Query<(&StarfieldStar, &mut Sprite), Without<MapPlanetPreview>>,
+) {
+    if !warp.active {
+        return;
     }
 
-    if let Ok(mut sprite) = preview_query.single_mut() {
-        sprite.image = asset_server.load(system.planet_sprite);
+    let Ok((mut transform, mut velocity, mut thruster_state)) = player_query.single_mut() else {
+        return;
+    };
+
+    let dt = time.delta_secs();
+    let ship_position = transform.translation.truncate();
+    let current_angle = transform.rotation.to_euler(EulerRot::XYZ).2 + std::f32::consts::FRAC_PI_2;
+    let target_direction = match warp.phase {
+        WarpPhase::Align | WarpPhase::Depart | WarpPhase::Cruise => warp.travel_direction,
+        WarpPhase::Arrive => (warp.arrival_point - ship_position).normalize_or_zero(),
+        WarpPhase::Idle => Vec2::ZERO,
+    };
+
+    if target_direction.length_squared() > 0.0 {
+        let desired_angle = target_direction.y.atan2(target_direction.x);
+        let angle_delta = shortest_angle_delta(current_angle, desired_angle);
+        let max_step = (TURN_SPEED * 1.85) * dt;
+        let new_angle = current_angle + angle_delta.clamp(-max_step, max_step);
+        transform.rotation = Quat::from_rotation_z(new_angle - std::f32::consts::FRAC_PI_2);
+    }
+
+    match warp.phase {
+        WarpPhase::Align => {
+            thruster_state.thrusting = false;
+            thruster_state.intensity =
+                (thruster_state.intensity - THRUST_RAMP_DOWN * dt).max(0.0);
+            velocity.0 *= 0.97;
+
+            let desired_angle = warp.travel_direction.y.atan2(warp.travel_direction.x);
+            let angle_delta = shortest_angle_delta(current_angle, desired_angle).abs();
+            if angle_delta <= WARP_ALIGNMENT_EPSILON {
+                warp.phase = WarpPhase::Depart;
+            }
+        }
+        WarpPhase::Depart => {
+            thruster_state.thrusting = true;
+            thruster_state.intensity =
+                (thruster_state.intensity + THRUST_RAMP_UP * dt).clamp(0.0, 1.0);
+            velocity.0 += warp.travel_direction * WARP_ACCELERATION * dt;
+            velocity.0 = velocity.0.clamp_length_max(WARP_MAX_SPEED);
+
+            let next_position = ship_position + velocity.0 * dt;
+            transform.translation.x = next_position.x;
+            transform.translation.y = next_position.y;
+
+            let departed_distance = next_position.distance(warp.departure_origin);
+            if departed_distance >= WARP_DEPART_DISTANCE && velocity.0.length() >= WARP_ENTRY_SPEED {
+                galaxy.current_system = warp.target_system;
+                apply_system_palette(
+                    &galaxy.systems[warp.target_system],
+                    &mut clear_color,
+                    &mut star_query,
+                );
+
+                let entry_position = warp.arrival_point - warp.travel_direction * WARP_ARRIVAL_DISTANCE;
+                transform.translation.x = entry_position.x;
+                transform.translation.y = entry_position.y;
+                velocity.0 = warp.travel_direction * WARP_MAX_SPEED;
+                warp.phase = WarpPhase::Cruise;
+            }
+        }
+        WarpPhase::Cruise => {
+            thruster_state.thrusting = true;
+            thruster_state.intensity =
+                (thruster_state.intensity + THRUST_RAMP_UP * 0.55 * dt).clamp(0.0, 1.0);
+            velocity.0 = velocity.0.lerp(warp.travel_direction * WARP_MAX_SPEED, 1.6 * dt);
+
+            let next_position = ship_position + velocity.0 * dt;
+            transform.translation.x = next_position.x;
+            transform.translation.y = next_position.y;
+
+            let remaining = warp.arrival_point.distance(next_position);
+            let brake_distance =
+                (velocity.0.length().powi(2) / (2.0 * WARP_BRAKE_ACCELERATION)).max(WARP_ARRIVAL_RADIUS);
+            if remaining <= brake_distance {
+                warp.phase = WarpPhase::Arrive;
+            }
+        }
+        WarpPhase::Arrive => {
+            let to_target = warp.arrival_point - ship_position;
+            let distance = to_target.length();
+            let direction = to_target.normalize_or_zero();
+            let braking_speed = (2.0 * WARP_BRAKE_ACCELERATION * distance).sqrt();
+            let approach_factor = (distance / 1800.0).clamp(0.0, 1.0);
+            let desired_speed = (braking_speed.min(WARP_MAX_SPEED) * approach_factor)
+                .max(if distance > 180.0 { 70.0 } else { 0.0 });
+            let desired_velocity = if direction.length_squared() > 0.0 {
+                direction * desired_speed
+            } else {
+                Vec2::ZERO
+            };
+
+            velocity.0 = velocity.0.lerp(desired_velocity, (WARP_GUIDANCE * dt).clamp(0.0, 1.0));
+            thruster_state.thrusting = velocity.0.length() > 40.0 || distance > WARP_FINISH_RADIUS;
+            let desired_intensity = (distance / 2500.0).clamp(0.12, 0.72);
+            thruster_state.intensity +=
+                (desired_intensity - thruster_state.intensity) * THRUST_RAMP_UP * 0.7 * dt;
+            thruster_state.intensity = thruster_state.intensity.clamp(0.0, 1.0);
+
+            let next_position = ship_position + velocity.0 * dt;
+            transform.translation.x = next_position.x;
+            transform.translation.y = next_position.y;
+
+            if distance <= WARP_FINISH_RADIUS && velocity.0.length() <= 28.0 {
+                transform.translation.x = warp.arrival_point.x;
+                transform.translation.y = warp.arrival_point.y;
+                velocity.0 = Vec2::ZERO;
+                thruster_state.thrusting = false;
+                thruster_state.intensity = 0.0;
+                warp.active = false;
+                warp.phase = WarpPhase::Idle;
+            }
+        }
+        WarpPhase::Idle => {}
     }
 }
 
@@ -530,11 +695,16 @@ fn player_input_system(
     camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     time: Res<Time>,
     galaxy: Res<GalaxyMap>,
+    warp: Res<WarpDrive>,
     mut query: Query<(&mut Transform, &mut Velocity, &mut ThrusterState), With<Player>>,
 ) {
     let Ok((mut transform, mut velocity, mut thruster_state)) = query.single_mut() else {
         return;
     };
+
+    if warp.active {
+        return;
+    }
 
     if galaxy.map_open {
         thruster_state.thrusting = false;
@@ -865,9 +1035,10 @@ fn update_local_system_visuals_system(
 
 fn update_hud_system(
     galaxy: Res<GalaxyMap>,
+    warp: Res<WarpDrive>,
     camera_query: Query<&GlobalTransform, With<MainCamera>>,
     mut system_text_query: Query<(&mut Text2d, &mut TextColor, &mut Transform), (With<HudSystemText>, Without<HudHintText>)>,
-    mut hint_text_query: Query<&mut Transform, (With<HudHintText>, Without<HudSystemText>)>,
+    mut hint_text_query: Query<(&mut Text2d, &mut Transform), (With<HudHintText>, Without<HudSystemText>)>,
 ) {
     let Ok(camera_transform) = camera_query.single() else {
         return;
@@ -876,17 +1047,40 @@ fn update_hud_system(
     let current_system = &galaxy.systems[galaxy.current_system];
 
     if let Ok((mut text, mut color, mut transform)) = system_text_query.single_mut() {
+        let warp_status = if warp.active {
+            let destination = &galaxy.systems[warp.target_system];
+            let phase = match warp.phase {
+                WarpPhase::Align => "Aligning",
+                WarpPhase::Depart => "Departure burn",
+                WarpPhase::Cruise => "Warp cruise",
+                WarpPhase::Arrive => "Arrival burn",
+                WarpPhase::Idle => "Idle",
+            };
+            format!("\nWarp: {} -> {}", phase, destination.name)
+        } else {
+            "\nWarp: Offline".to_string()
+        };
+
         *text = Text2d::new(format!(
-            "Current system: {}\nHolding: {}\nVisible stations: {}",
+            "Current system: {}\nHolding: {}\nVisible stations: {}{}",
             current_system.name,
             current_system.faction.name(),
-            current_system.stations.len()
+            current_system.stations.len(),
+            warp_status,
         ));
         *color = TextColor(current_system.faction.color());
         transform.translation = (camera_center + Vec2::new(-770.0, 430.0)).extend(200.0);
     }
 
-    if let Ok(mut transform) = hint_text_query.single_mut() {
+    if let Ok((mut text, mut transform)) = hint_text_query.single_mut() {
+        let hint = if warp.active {
+            "Warp in progress..."
+        } else if galaxy.map_open {
+            "TAB/Esc: close map | click system twice or press Enter to warp"
+        } else {
+            "TAB: star map | LMB: thrust toward cursor | systems and stations are map-only"
+        };
+        *text = Text2d::new(hint);
         transform.translation = (camera_center + Vec2::new(-770.0, -430.0)).extend(200.0);
     }
 }
@@ -910,6 +1104,33 @@ fn shortest_angle_delta(current: f32, target: f32) -> f32 {
         delta += std::f32::consts::TAU;
     }
     delta
+}
+
+fn station_anchor(system: &SystemDefinition) -> Vec2 {
+    system
+        .stations
+        .first()
+        .map(|station| system.planet_position + station.offset)
+        .unwrap_or(system.planet_position + Vec2::new(220.0, 0.0))
+}
+
+fn warp_arrival_point(system: &SystemDefinition, system_index: usize) -> Vec2 {
+    let station_position = station_anchor(system);
+    let angle = 0.85 + system_index as f32 * 0.9;
+    let offset = Vec2::from_angle(angle) * WARP_ARRIVAL_RADIUS;
+    station_position + offset
+}
+
+fn apply_system_palette(
+    system: &SystemDefinition,
+    clear_color: &mut ClearColor,
+    star_query: &mut Query<(&StarfieldStar, &mut Sprite), Without<MapPlanetPreview>>,
+) {
+    clear_color.0 = system.sky_color;
+    for (star, mut sprite) in star_query.iter_mut() {
+        sprite.color = tint_star(system.star_color, star.brightness);
+        sprite.custom_size = Some(Vec2::splat(star.size));
+    }
 }
 
 fn authored_galaxy() -> GalaxyMap {
