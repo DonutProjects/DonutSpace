@@ -1,2 +1,5 @@
 target
 Cargo.lock
+legacy_assets
+legacy_macroquad
+
