@@ -1,11 +1,11 @@
 [package]
 name = "DonutSpace"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["iamdonut215", "alex92567"]
 
 [dependencies]
-bevy = { version = "0.18", default-features = false, features = ["std", "default_app", "default_platform", "2d_bevy_render"] }
+bevy = { version = "0.18", default-features = false, features = ["std", "2d", "png"] }
 rand = "0.8"
 
 [profile.dev]
